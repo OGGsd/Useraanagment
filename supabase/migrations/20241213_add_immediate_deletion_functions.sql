@@ -5,8 +5,13 @@
 DROP FUNCTION IF EXISTS delete_user_immediately(UUID);
 DROP FUNCTION IF EXISTS cleanup_deleted_user_data(UUID);
 
--- Drop existing policy if it exists
-DROP POLICY IF EXISTS "Users can delete their own account immediately" ON user_account_state;
+-- Drop existing policy if it exists (only if table exists)
+DO $$
+BEGIN
+  IF EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'user_account_state') THEN
+    DROP POLICY IF EXISTS "Users can delete their own account immediately" ON user_account_state;
+  END IF;
+END $$;
 
 -- Function to delete user immediately (removes access and marks for deletion)
 CREATE OR REPLACE FUNCTION delete_user_immediately(target_user_id UUID)
@@ -17,41 +22,48 @@ AS $$
 BEGIN
   -- Log the deletion attempt
   RAISE NOTICE 'Starting immediate deletion for user: %', target_user_id;
-  
-  -- 1. Remove user access immediately by updating account state
-  UPDATE user_account_state
-  SET
-    account_status = 'deleted',
-    has_access = false,
-    access_level = 'suspended',
-    trial_days_remaining = 0,
-    updated_at = NOW()
-  WHERE user_id = target_user_id;
-  
-  -- 2. Mark trial as deleted
-  UPDATE user_trials
-  SET
-    trial_status = 'deleted',
-    deletion_scheduled_at = NOW(),
-    updated_at = NOW()
-  WHERE user_id = target_user_id;
-  
-  -- 3. Update any stripe subscriptions to cancelled status
-  UPDATE stripe_subscriptions 
-  SET 
-    status = 'canceled',
-    cancel_at_period_end = true,
-    canceled_at = EXTRACT(EPOCH FROM NOW())::bigint
-  WHERE customer_id IN (
-    SELECT customer_id 
-    FROM stripe_customers 
-    WHERE user_id = target_user_id
-  );
-  
+
+  -- 1. Remove user access immediately by updating account state (if table exists)
+  IF EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'user_account_state') THEN
+    UPDATE user_account_state
+    SET
+      account_status = 'deleted',
+      has_access = false,
+      access_level = 'suspended',
+      trial_days_remaining = 0,
+      updated_at = NOW()
+    WHERE user_id = target_user_id;
+  END IF;
+
+  -- 2. Mark trial as deleted (if table exists)
+  IF EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'user_trials') THEN
+    UPDATE user_trials
+    SET
+      trial_status = 'deleted',
+      deletion_scheduled_at = NOW(),
+      updated_at = NOW()
+    WHERE user_id = target_user_id;
+  END IF;
+
+  -- 3. Update any stripe subscriptions to cancelled status (if tables exist)
+  IF EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'stripe_subscriptions')
+     AND EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'stripe_customers') THEN
+    UPDATE stripe_subscriptions
+    SET
+      status = 'canceled',
+      cancel_at_period_end = true,
+      canceled_at = EXTRACT(EPOCH FROM NOW())::bigint
+    WHERE customer_id IN (
+      SELECT customer_id
+      FROM stripe_customers
+      WHERE user_id = target_user_id
+    );
+  END IF;
+
   RAISE NOTICE 'User % access removed immediately', target_user_id;
-  
+
   RETURN TRUE;
-  
+
 EXCEPTION
   WHEN OTHERS THEN
     RAISE WARNING 'Error in delete_user_immediately for user %: %', target_user_id, SQLERRM;
@@ -118,9 +130,14 @@ $$;
 GRANT EXECUTE ON FUNCTION delete_user_immediately(UUID) TO authenticated;
 GRANT EXECUTE ON FUNCTION cleanup_deleted_user_data(UUID) TO authenticated;
 
--- Add RLS policies to ensure users can only delete their own accounts
-CREATE POLICY "Users can delete their own account immediately" ON user_account_state
-  FOR UPDATE USING (auth.uid() = user_id);
+-- Add RLS policies to ensure users can only delete their own accounts (only if table exists)
+DO $$
+BEGIN
+  IF EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'user_account_state') THEN
+    CREATE POLICY "Users can delete their own account immediately" ON user_account_state
+      FOR UPDATE USING (auth.uid() = user_id);
+  END IF;
+END $$;
 
 -- Add comment for documentation
 COMMENT ON FUNCTION delete_user_immediately(UUID) IS 'Immediately removes user access and marks account for deletion. Used for instant account deletion regardless of subscription status.';

@@ -63,13 +63,13 @@ SECURITY DEFINER
 AS $$
 BEGIN
     RETURN QUERY
-    SELECT 
-        asc.axie_studio_user_id,
-        asc.axie_studio_email,
-        asc.axie_studio_password,
-        asc.last_login_at
-    FROM axie_studio_credentials asc
-    WHERE asc.user_id = p_user_id;
+    SELECT
+        creds.axie_studio_user_id,
+        creds.axie_studio_email,
+        creds.axie_studio_password,
+        creds.last_login_at
+    FROM axie_studio_credentials creds
+    WHERE creds.user_id = p_user_id;
 END;
 $$;
 
